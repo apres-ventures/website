@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev": "python3 -m http.server 8765",
     "gen-icon": "node scripts/gen-apple-touch-icon.mjs",
     "capture": "node scripts/capture-frames.mjs"
   },

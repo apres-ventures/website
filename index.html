@@ -16,16 +16,24 @@
   <meta property="og:image:height" content="630">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:image" content="/og.png">
-  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="icon" type="image/png" sizes="180x180" href="/apple-touch-icon.png">
-  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-  <link rel="mask-icon" href="/favicon.svg" color="#000000">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="icon" type="image/png" sizes="180x180" href="apple-touch-icon.png">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="mask-icon" href="favicon.svg" color="#000000">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;700&display=swap" rel="stylesheet">
   <style>
+    :root { --scene-margin: clamp(12px, 2vmin, 32px); }
     html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
-    canvas { display: block; }
+    canvas {
+      display: block;
+      position: fixed;
+      top: var(--scene-margin);
+      left: var(--scene-margin);
+      width: calc(100vw - 2 * var(--scene-margin));
+      height: calc(100vh - 2 * var(--scene-margin));
+    }
   </style>
 </head>
 <body>
@@ -46,7 +54,7 @@
     // ─── Renderer / scene / camera ───────────────────────────────────────────
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setSize(innerWidth, innerHeight);
+    renderer.setSize(innerWidth, innerHeight, false);  // CSS (inset: clamp(...)) controls display size
     renderer.setClearColor(0x000000, 1);
     renderer.autoClear = false;
     document.body.appendChild(renderer.domElement);
@@ -66,6 +74,8 @@
       const N = size * size;
       const data = new Float32Array(N * 4);
       const golden = Math.PI * (Math.sqrt(5) - 1);
+      let minX = Infinity, maxX = -Infinity;
+      let minY = Infinity, maxY = -Infinity;
       for (let i = 0; i < N; i++) {
         const y = 1 - (i / (N - 1)) * 2;
         const r = Math.sqrt(1 - y * y);
@@ -77,34 +87,73 @@
           Math.cos(y * 3.1 + z * 1.4) * Math.sin(x * 2.3) +
           Math.sin(z * 2.3 + x * 1.8) * Math.cos(y * 2.7);
         const R = 1.7 * (1 + 0.22 * d / 3);
-        data[i * 4]     = x * R;
-        data[i * 4 + 1] = y * R;
-        data[i * 4 + 2] = z * R;
+        const X = x * R, Y = y * R, Z = z * R;
+        data[i * 4]     = X;
+        data[i * 4 + 1] = Y;
+        data[i * 4 + 2] = Z;
         data[i * 4 + 3] = 1;
+        if (X < minX) minX = X; if (X > maxX) maxX = X;
+        if (Y < minY) minY = Y; if (Y > maxY) maxY = Y;
+      }
+      // Recenter on bbox center so the blob sits visually centered (deformation
+      // shifts the geometric center off origin).
+      const cx = (minX + maxX) / 2;
+      const cy = (minY + maxY) / 2;
+      for (let i = 0; i < N; i++) {
+        data[i * 4]     -= cx;
+        data[i * 4 + 1] -= cy;
       }
       const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.FloatType);
       tex.needsUpdate = true;
+      tex.userData = { worldW: maxX - minX, worldH: maxY - minY };
       return tex;
     }
 
-    function buildTextTexture(text, size) {
+    function buildTextTexture(text, size, orientation) {
       const N = size * size;
       const c = document.createElement('canvas');
-      c.width = 1800; c.height = 520;
+
+      let SCALE;
+      if (orientation === 'vertical') {
+        c.width = 600; c.height = 1800;
+        SCALE = 280;
+      } else {
+        c.width = 1800; c.height = 520;
+        SCALE = 110;
+      }
+
       const ctx = c.getContext('2d');
       ctx.fillStyle = '#fff';
-      ctx.font = '500 380px "Geist Mono", ui-monospace, monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(text, c.width / 2, c.height / 2);
+
+      if (orientation === 'vertical') {
+        // Letters stacked upright, one per row.
+        ctx.font = '500 300px "Geist Mono", ui-monospace, monospace';
+        const chars = Array.from(text);
+        const lineHeight = 330;
+        const stackHeight = chars.length * lineHeight;
+        const startY = (c.height - stackHeight) / 2 + lineHeight / 2;
+        for (let i = 0; i < chars.length; i++) {
+          ctx.fillText(chars[i], c.width / 2, startY + i * lineHeight);
+        }
+      } else {
+        ctx.font = '500 380px "Geist Mono", ui-monospace, monospace';
+        ctx.fillText(text, c.width / 2, c.height / 2);
+      }
+
       const pixels = ctx.getImageData(0, 0, c.width, c.height).data;
       const hits = [];
+      let minPx = Infinity, maxPx = -Infinity, minPy = Infinity, maxPy = -Infinity;
       for (let py = 0; py < c.height; py++) {
         for (let px = 0; px < c.width; px++) {
-          if (pixels[(py * c.width + px) * 4 + 3] > 128) hits.push(px, py);
+          if (pixels[(py * c.width + px) * 4 + 3] > 128) {
+            hits.push(px, py);
+            if (px < minPx) minPx = px; if (px > maxPx) maxPx = px;
+            if (py < minPy) minPy = py; if (py > maxPy) maxPy = py;
+          }
         }
       }
-      const SCALE = 110;
       const data = new Float32Array(N * 4);
       for (let i = 0; i < N; i++) {
         const j = (Math.random() * (hits.length / 2)) | 0;
@@ -116,11 +165,16 @@
       }
       const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.FloatType);
       tex.needsUpdate = true;
+      tex.userData = {
+        worldW: (maxPx - minPx) / SCALE,
+        worldH: (maxPy - minPy) / SCALE,
+      };
       return tex;
     }
 
-    const blobTexture = buildBlobTexture(SIZE);
-    const textTexture = buildTextTexture(TEXT, SIZE);
+    const blobTexture  = buildBlobTexture(SIZE);
+    const textTextureH = buildTextTexture(TEXT, SIZE, 'horizontal');
+    const textTextureV = buildTextTexture(TEXT, SIZE, 'vertical');
 
     // ─── Ping-pong render targets for position state ─────────────────────────
     const rtOptions = {
@@ -160,6 +214,7 @@
         uniform float uMouseActive;
         uniform float uMouseRadius;
         uniform float uMouseForce;
+        uniform float uSceneScale;
 
         varying vec2 vUv;
 
@@ -246,7 +301,7 @@
           // Smooth ease on the morph target so particles don't snap between shapes.
           float p = uProgress;
           p = p * p * (3.0 - 2.0 * p);
-          vec3 target = mix(blob, text, p);
+          vec3 target = mix(blob, text, p) * uSceneScale;
 
           // Spring-like approach toward the morphing target.
           vec3 attraction = (target - pos) * uApproach;
@@ -276,11 +331,14 @@
       `,
     };
 
+    const isPortrait = () => innerHeight > innerWidth;
+    let portrait = isPortrait();
+
     const simMaterial = new THREE.ShaderMaterial({
       uniforms: {
         uPositions:   { value: blobTexture },   // seeded with blob on frame 1
         uBlob:        { value: blobTexture },
-        uText:        { value: textTexture },
+        uText:        { value: portrait ? textTextureV : textTextureH },
         uProgress:    { value: 0 },
         uTime:        { value: 0 },
         uApproach:    { value: 0.035 },
@@ -292,6 +350,7 @@
         uMouseActive: { value: 0 },
         uMouseRadius: { value: 0.95 },
         uMouseForce:  { value: 0.022 },
+        uSceneScale:  { value: 1 },
       },
       vertexShader: simulationShader.vertexShader,
       fragmentShader: simulationShader.fragmentShader,
@@ -436,9 +495,10 @@
     const mouseTarget = new THREE.Vector3(99, 99, 0);
     let mouseActiveTarget = 0;
     function projectPointer(clientX, clientY) {
+      const r = renderer.domElement.getBoundingClientRect();
       const ndc = new THREE.Vector3(
-        (clientX / innerWidth) * 2 - 1,
-        -(clientY / innerHeight) * 2 + 1,
+        ((clientX - r.left) / r.width) * 2 - 1,
+        -((clientY - r.top) / r.height) * 2 + 1,
         0.5
       );
       ndc.unproject(camera);
@@ -503,12 +563,41 @@
     }
     tick();
 
-    addEventListener('resize', () => {
-      camera.aspect = innerWidth / innerHeight;
+    function syncOrientation() {
+      const now = isPortrait();
+      if (now !== portrait) {
+        portrait = now;
+        simMaterial.uniforms.uText.value = portrait ? textTextureV : textTextureH;
+      }
+    }
+
+    // Padding factor: scene's natural extent fills at most this fraction of the
+    // visible frustum on either axis. Leaves breathing room around the edges
+    // and absorbs the curl-noise displacement that pushes particles past the
+    // morph target during transitions.
+    const SCENE_PADDING = 0.82;
+
+    function fitScale() {
+      const text = simMaterial.uniforms.uText.value;
+      const naturalW = Math.max(blobTexture.userData.worldW, text.userData.worldW);
+      const naturalH = Math.max(blobTexture.userData.worldH, text.userData.worldH);
+      const visH = 2 * camera.position.z * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+      const visW = visH * camera.aspect;
+      return Math.min(1, (visW * SCENE_PADDING) / naturalW, (visH * SCENE_PADDING) / naturalH);
+    }
+
+    function fit() {
+      const w = renderer.domElement.clientWidth;
+      const h = renderer.domElement.clientHeight;
+      renderer.setSize(w, h, false);
+      camera.aspect = w / h;
       camera.updateProjectionMatrix();
-      renderer.setSize(innerWidth, innerHeight);
       renderMaterial.uniforms.uPixelRatio.value = renderer.getPixelRatio();
-    });
+      syncOrientation();
+      simMaterial.uniforms.uSceneScale.value = fitScale();
+    }
+    addEventListener('resize', fit);
+    fit();
   </script>
 </body>
 </html>
