@@ -1,0 +1,13 @@
+{
+  "name": "apres-ventures-website",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "gen-icon": "node scripts/gen-apple-touch-icon.mjs",
+    "capture": "node scripts/capture-frames.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.60.0"
+  }
+}

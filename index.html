@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Après Ventures</title>
+  <meta name="description" content="Après Ventures — Official website.">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#000000">
+  <meta property="og:title" content="Après Ventures">
+  <meta property="og:description" content="Official website.">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="/og.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="/og.png">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="icon" type="image/png" sizes="180x180" href="/apple-touch-icon.png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="mask-icon" href="/favicon.svg" color="#000000">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+  <script type="importmap">
+    { "imports": { "three": "https://esm.sh/three@0.161.0" } }
+  </script>
+  <script type="module">
+    import * as THREE from 'three';
+
+    // ─── Config ──────────────────────────────────────────────────────────────
+    // SIZE × SIZE particles. 128 = 16,384; 192 = 36,864; 256 = 65,536.
+    const SIZE = 192;
+    const COUNT = SIZE * SIZE;
+    const TEXT = 'après';
+
+    await document.fonts.load('500 380px "Geist Mono"');
+
+    // ─── Renderer / scene / camera ───────────────────────────────────────────
+    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.setClearColor(0x000000, 1);
+    renderer.autoClear = false;
+    document.body.appendChild(renderer.domElement);
+
+    if (!renderer.capabilities.isWebGL2 &&
+        !renderer.extensions.get('OES_texture_float')) {
+      throw new Error('Float textures unsupported — FBO sim requires WebGL2 or OES_texture_float.');
+    }
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 100);
+    camera.position.z = 7;
+
+    // ─── Build position data textures (blob + text glyphs) ───────────────────
+    // Each particle is one texel in an RGBA float texture: rgb = (x, y, z).
+    function buildBlobTexture(size) {
+      const N = size * size;
+      const data = new Float32Array(N * 4);
+      const golden = Math.PI * (Math.sqrt(5) - 1);
+      for (let i = 0; i < N; i++) {
+        const y = 1 - (i / (N - 1)) * 2;
+        const r = Math.sqrt(1 - y * y);
+        const theta = golden * i;
+        const x = Math.cos(theta) * r;
+        const z = Math.sin(theta) * r;
+        const d =
+          Math.sin(x * 2.7 + y * 1.9) * Math.cos(z * 2.1) +
+          Math.cos(y * 3.1 + z * 1.4) * Math.sin(x * 2.3) +
+          Math.sin(z * 2.3 + x * 1.8) * Math.cos(y * 2.7);
+        const R = 1.7 * (1 + 0.22 * d / 3);
+        data[i * 4]     = x * R;
+        data[i * 4 + 1] = y * R;
+        data[i * 4 + 2] = z * R;
+        data[i * 4 + 3] = 1;
+      }
+      const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.FloatType);
+      tex.needsUpdate = true;
+      return tex;
+    }
+
+    function buildTextTexture(text, size) {
+      const N = size * size;
+      const c = document.createElement('canvas');
+      c.width = 1800; c.height = 520;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.font = '500 380px "Geist Mono", ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, c.width / 2, c.height / 2);
+      const pixels = ctx.getImageData(0, 0, c.width, c.height).data;
+      const hits = [];
+      for (let py = 0; py < c.height; py++) {
+        for (let px = 0; px < c.width; px++) {
+          if (pixels[(py * c.width + px) * 4 + 3] > 128) hits.push(px, py);
+        }
+      }
+      const SCALE = 110;
+      const data = new Float32Array(N * 4);
+      for (let i = 0; i < N; i++) {
+        const j = (Math.random() * (hits.length / 2)) | 0;
+        const px = hits[j * 2], py = hits[j * 2 + 1];
+        data[i * 4]     = (px - c.width / 2) / SCALE;
+        data[i * 4 + 1] = -(py - c.height / 2) / SCALE;
+        data[i * 4 + 2] = (Math.random() - 0.5) * 0.18;
+        data[i * 4 + 3] = 1;
+      }
+      const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.FloatType);
+      tex.needsUpdate = true;
+      return tex;
+    }
+
+    const blobTexture = buildBlobTexture(SIZE);
+    const textTexture = buildTextTexture(TEXT, SIZE);
+
+    // ─── Ping-pong render targets for position state ─────────────────────────
+    const rtOptions = {
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
+      format: THREE.RGBAFormat,
+      type: THREE.FloatType,
+      depthBuffer: false,
+      stencilBuffer: false,
+    };
+    let rtA = new THREE.WebGLRenderTarget(SIZE, SIZE, rtOptions);
+    let rtB = new THREE.WebGLRenderTarget(SIZE, SIZE, rtOptions);
+
+    // ─── Simulation pass: fullscreen quad with the position-update shader ────
+    const simulationShader = {
+      vertexShader: /* glsl */`
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */`
+        precision highp float;
+
+        uniform sampler2D uPositions;
+        uniform sampler2D uBlob;
+        uniform sampler2D uText;
+        uniform float uProgress;
+        uniform float uTime;
+        uniform float uApproach;
+        uniform float uCurl;
+        uniform float uCurlFreq;
+        uniform vec3 uWind;
+        uniform float uNoiseOffset;
+        uniform vec3 uMouse;
+        uniform float uMouseActive;
+        uniform float uMouseRadius;
+        uniform float uMouseForce;
+
+        varying vec2 vUv;
+
+        // ── Ashima Arts simplex 3D noise ───────────────────────────────────
+        vec3 mod289(vec3 x) { return x - floor(x * (1.0/289.0)) * 289.0; }
+        vec4 mod289(vec4 x) { return x - floor(x * (1.0/289.0)) * 289.0; }
+        vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
+        vec4 taylorInvSqrt(vec4 r) { return 1.79284291400159 - 0.85373472095314 * r; }
+
+        float snoise(vec3 v) {
+          const vec2 C = vec2(1.0/6.0, 1.0/3.0);
+          const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+          vec3 i  = floor(v + dot(v, C.yyy));
+          vec3 x0 = v - i + dot(i, C.xxx);
+          vec3 g = step(x0.yzx, x0.xyz);
+          vec3 l = 1.0 - g;
+          vec3 i1 = min(g.xyz, l.zxy);
+          vec3 i2 = max(g.xyz, l.zxy);
+          vec3 x1 = x0 - i1 + C.xxx;
+          vec3 x2 = x0 - i2 + C.yyy;
+          vec3 x3 = x0 - D.yyy;
+          i = mod289(i);
+          vec4 p = permute(permute(permute(
+                     i.z + vec4(0.0, i1.z, i2.z, 1.0))
+                   + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+                   + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+          float n_ = 0.142857142857;
+          vec3 ns = n_ * D.wyz - D.xzx;
+          vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+          vec4 x_ = floor(j * ns.z);
+          vec4 y_ = floor(j - 7.0 * x_);
+          vec4 x = x_ * ns.x + ns.yyyy;
+          vec4 y = y_ * ns.x + ns.yyyy;
+          vec4 h = 1.0 - abs(x) - abs(y);
+          vec4 b0 = vec4(x.xy, y.xy);
+          vec4 b1 = vec4(x.zw, y.zw);
+          vec4 s0 = floor(b0)*2.0 + 1.0;
+          vec4 s1 = floor(b1)*2.0 + 1.0;
+          vec4 sh = -step(h, vec4(0.0));
+          vec4 a0 = b0.xzyw + s0.xzyw * sh.xxyy;
+          vec4 a1 = b1.xzyw + s1.xzyw * sh.zzww;
+          vec3 p0 = vec3(a0.xy, h.x);
+          vec3 p1 = vec3(a0.zw, h.y);
+          vec3 p2 = vec3(a1.xy, h.z);
+          vec3 p3 = vec3(a1.zw, h.w);
+          vec4 norm = taylorInvSqrt(vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
+          p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+          vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+          m = m * m;
+          return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+        }
+
+        vec3 snoiseVec3(vec3 x) {
+          float s  = snoise(x);
+          float s1 = snoise(vec3(x.y - 19.1, x.z + 33.4, x.x + 47.2));
+          float s2 = snoise(vec3(x.z + 74.2, x.x - 124.5, x.y + 99.4));
+          return vec3(s, s1, s2);
+        }
+
+        // Curl of a 3D vector noise field — divergence-free, so particles
+        // flow along streamlines without sources or sinks.
+        vec3 curlNoise(vec3 p) {
+          const float e = 0.1;
+          vec3 dx = vec3(e, 0.0, 0.0);
+          vec3 dy = vec3(0.0, e, 0.0);
+          vec3 dz = vec3(0.0, 0.0, e);
+          vec3 p_x0 = snoiseVec3(p - dx);
+          vec3 p_x1 = snoiseVec3(p + dx);
+          vec3 p_y0 = snoiseVec3(p - dy);
+          vec3 p_y1 = snoiseVec3(p + dy);
+          vec3 p_z0 = snoiseVec3(p - dz);
+          vec3 p_z1 = snoiseVec3(p + dz);
+          float x = p_y1.z - p_y0.z - p_z1.y + p_z0.y;
+          float y = p_z1.x - p_z0.x - p_x1.z + p_x0.z;
+          float z = p_x1.y - p_x0.y - p_y1.x + p_y0.x;
+          return normalize(vec3(x, y, z) / (2.0 * e));
+        }
+
+        void main() {
+          vec3 pos   = texture2D(uPositions, vUv).xyz;
+          vec3 blob  = texture2D(uBlob, vUv).xyz;
+          vec3 text  = texture2D(uText, vUv).xyz;
+
+          // Smooth ease on the morph target so particles don't snap between shapes.
+          float p = uProgress;
+          p = p * p * (3.0 - 2.0 * p);
+          vec3 target = mix(blob, text, p);
+
+          // Spring-like approach toward the morphing target.
+          vec3 attraction = (target - pos) * uApproach;
+
+          // Curl flow is loudest mid-transit, quiet at the endpoints.
+          // Squared peak (16 p^2 (1-p)^2) keeps turbulence flat near the
+          // endpoints — no pre-burst jiggle.
+          float midBoost = 16.0 * uProgress * uProgress * (1.0 - uProgress) * (1.0 - uProgress);
+          float curlStrength = uCurl * (0.10 + midBoost);
+          vec3 flow = curlNoise(pos * uCurlFreq + vec3(uTime * 0.05 + uNoiseOffset)) * curlStrength;
+
+          // Wind: a directional gust unique to each cycle — gives every
+          // transition its own character (which way the snow blows this time).
+          flow += uWind * midBoost;
+
+          // Mouse repulsion: particles part around the cursor in the XY plane,
+          // like a hand passing through dust. Falls off smoothly with distance.
+          vec2 toMouse = pos.xy - uMouse.xy;
+          float dM = length(toMouse) + 1e-5;
+          float mouseFalloff = smoothstep(uMouseRadius, 0.0, dM);
+          vec2 push = (toMouse / dM) * mouseFalloff * uMouseForce * uMouseActive;
+          flow += vec3(push, 0.0);
+
+          vec3 newPos = pos + attraction + flow;
+          gl_FragColor = vec4(newPos, 1.0);
+        }
+      `,
+    };
+
+    const simMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        uPositions:   { value: blobTexture },   // seeded with blob on frame 1
+        uBlob:        { value: blobTexture },
+        uText:        { value: textTexture },
+        uProgress:    { value: 0 },
+        uTime:        { value: 0 },
+        uApproach:    { value: 0.035 },
+        uCurl:        { value: 0.04 },
+        uCurlFreq:    { value: 0.55 },
+        uWind:        { value: new THREE.Vector3() },
+        uNoiseOffset: { value: 0 },
+        uMouse:       { value: new THREE.Vector3(99, 99, 0) },
+        uMouseActive: { value: 0 },
+        uMouseRadius: { value: 0.95 },
+        uMouseForce:  { value: 0.022 },
+      },
+      vertexShader: simulationShader.vertexShader,
+      fragmentShader: simulationShader.fragmentShader,
+    });
+
+    const simScene = new THREE.Scene();
+    const simCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    const simQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), simMaterial);
+    simScene.add(simQuad);
+
+    // ─── Render pass: points indexed into the position texture by UV ─────────
+    const particlesGeometry = new THREE.BufferGeometry();
+    {
+      const refs = new Float32Array(COUNT * 3);
+      const seeds = new Float32Array(COUNT);
+      for (let i = 0; i < COUNT; i++) {
+        refs[i * 3]     = (i % SIZE) / SIZE + 0.5 / SIZE;
+        refs[i * 3 + 1] = Math.floor(i / SIZE) / SIZE + 0.5 / SIZE;
+        refs[i * 3 + 2] = 0;
+        seeds[i] = Math.random();
+      }
+      particlesGeometry.setAttribute('position', new THREE.BufferAttribute(refs, 3));
+      particlesGeometry.setAttribute('aSeed', new THREE.BufferAttribute(seeds, 1));
+    }
+
+    const renderMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        uPositions:  { value: null },
+        uSize:       { value: 1.6 },
+        uPixelRatio: { value: renderer.getPixelRatio() },
+      },
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      vertexShader: /* glsl */`
+        uniform sampler2D uPositions;
+        uniform float uSize;
+        uniform float uPixelRatio;
+        attribute float aSeed;
+        varying float vDepth;
+        varying float vSeed;
+        void main() {
+          vec3 pos = texture2D(uPositions, position.xy).xyz;
+          vec4 mv = modelViewMatrix * vec4(pos, 1.0);
+          // Smaller, more consistent dots. ±12% size variance keeps the swarm
+          // cohesive while still avoiding the "stamped from one cutter" look.
+          float sizeJitter = 0.88 + 0.24 * aSeed;
+          gl_PointSize = uSize * uPixelRatio * (18.0 / -mv.z) * sizeJitter;
+          gl_Position = projectionMatrix * mv;
+          vDepth = -mv.z;
+          vSeed = aSeed;
+        }
+      `,
+      fragmentShader: /* glsl */`
+        varying float vDepth;
+        varying float vSeed;
+        void main() {
+          // Heckel's falloff: tight bright core, color fades to BLACK (not just
+          // transparent) before the edge. With additive blending this reads as
+          // a sparkle rather than a cotton-ball halo.
+          float r = distance(gl_PointCoord, vec2(0.5));
+          float strength = pow(1.0 - clamp(r, 0.0, 0.5) * 2.0, 3.0);
+
+          float fade = clamp(1.0 - (vDepth - 4.0) / 8.0, 0.55, 1.0);
+
+          // Bluer snow palette: every particle has a cool tint baseline, and
+          // the tail extends into a saturated arctic blue. Roughly even spread
+          // across the four stops, so blues read clearly without being rare.
+          vec3 white  = vec3(0.92, 0.96, 1.00);
+          vec3 silver = vec3(0.78, 0.88, 1.00);
+          vec3 sky    = vec3(0.55, 0.75, 1.00);
+          vec3 azure  = vec3(0.32, 0.56, 0.95);
+          float t = pow(vSeed, 0.95);
+          vec3 color;
+          if      (t < 0.30) color = mix(white,  silver, t / 0.30);
+          else if (t < 0.65) color = mix(silver, sky,    (t - 0.30) / 0.35);
+          else               color = mix(sky,    azure,  (t - 0.65) / 0.35);
+
+          // Lighter brightness jitter so the swarm reads cohesive.
+          float brightness = 0.88 + 0.18 * fract(vSeed * 17.31);
+
+          // Modulate color by strength (the key sparkle trick), alpha follows.
+          gl_FragColor = vec4(color * strength, strength * 0.85 * fade * brightness);
+        }
+      `,
+    });
+
+    const points = new THREE.Points(particlesGeometry, renderMaterial);
+    points.frustumCulled = false;
+    scene.add(points);
+
+    // ─── Morph progress curve: blob → morph → hold on "après" → morph → blob ─
+    const BLOB_HOLD = 4.0;
+    const MORPH_IN  = 3.8;
+    const TEXT_HOLD = 5.0;
+    const MORPH_OUT = 3.8;
+    const CYCLE = BLOB_HOLD + MORPH_IN + TEXT_HOLD + MORPH_OUT;
+    function progressAt(t) {
+      let e = t % CYCLE;
+      if (e < BLOB_HOLD) return 0;
+      e -= BLOB_HOLD;
+      if (e < MORPH_IN) { const x = e / MORPH_IN; return x * x * (3 - 2 * x); }
+      e -= MORPH_IN;
+      if (e < TEXT_HOLD) return 1;
+      e -= TEXT_HOLD;
+      const x = Math.min(1, e / MORPH_OUT);
+      return 1 - x * x * (3 - 2 * x);
+    }
+
+    // ─── Per-cycle variation: each transit gets its own wind direction ───────
+    const hash = n => {
+      const x = Math.sin(n * 12345.678) * 43758.5453;
+      return x - Math.floor(x);
+    };
+    function variantsFor(cycleIdx) {
+      const a  = hash(cycleIdx * 1.0 + 0.13) * Math.PI * 2;
+      const el = (hash(cycleIdx + 7) - 0.5) * Math.PI * 0.55;
+      const mag = 0.045 + hash(cycleIdx + 13) * 0.055;
+      return {
+        curl:        0.028 + hash(cycleIdx + 19) * 0.045,
+        curlFreq:    0.38  + hash(cycleIdx + 23) * 0.50,
+        noiseOffset: hash(cycleIdx + 29) * 100.0,
+        wind: new THREE.Vector3(
+          Math.cos(a) * Math.cos(el),
+          Math.sin(el),
+          Math.sin(a) * Math.cos(el)
+        ).multiplyScalar(mag)
+      };
+    }
+
+    let currentVariant = variantsFor(0);
+    let lastCycleIdx = 0;
+    const windCur = new THREE.Vector3();
+    simMaterial.uniforms.uCurl.value        = currentVariant.curl;
+    simMaterial.uniforms.uCurlFreq.value    = currentVariant.curlFreq;
+    simMaterial.uniforms.uNoiseOffset.value = currentVariant.noiseOffset;
+    windCur.copy(currentVariant.wind);
+    simMaterial.uniforms.uWind.value.copy(windCur);
+
+    // ─── Pointer interaction: gentle repulsion field around the cursor ───────
+    const mouseWorld  = new THREE.Vector3(99, 99, 0);  // start off-canvas
+    const mouseTarget = new THREE.Vector3(99, 99, 0);
+    let mouseActiveTarget = 0;
+    function projectPointer(clientX, clientY) {
+      const ndc = new THREE.Vector3(
+        (clientX / innerWidth) * 2 - 1,
+        -(clientY / innerHeight) * 2 + 1,
+        0.5
+      );
+      ndc.unproject(camera);
+      const dir = ndc.sub(camera.position).normalize();
+      // Intersect z = 0 plane (where the text glyphs live).
+      const tHit = -camera.position.z / dir.z;
+      mouseTarget.copy(camera.position).add(dir.multiplyScalar(tHit));
+    }
+    addEventListener('pointermove', e => {
+      projectPointer(e.clientX, e.clientY);
+      mouseActiveTarget = 1;
+    });
+    addEventListener('pointerleave', () => { mouseActiveTarget = 0; });
+    addEventListener('blur',         () => { mouseActiveTarget = 0; });
+
+    const clock = new THREE.Clock();
+    let initialized = false;
+
+    function tick() {
+      const t = clock.getElapsedTime();
+      const progress = progressAt(t);
+
+      // Snap variant params at cycle boundary (invisible because progress == 0).
+      const cycleIdx = Math.floor(t / CYCLE);
+      if (cycleIdx !== lastCycleIdx) {
+        currentVariant = variantsFor(cycleIdx);
+        lastCycleIdx = cycleIdx;
+        const sm = simMaterial.uniforms;
+        sm.uCurl.value        = currentVariant.curl;
+        sm.uCurlFreq.value    = currentVariant.curlFreq;
+        sm.uNoiseOffset.value = currentVariant.noiseOffset;
+        windCur.copy(currentVariant.wind);
+        sm.uWind.value.copy(windCur);
+      }
+
+      // Smooth pointer follow — keeps the deformation gliding rather than snapping.
+      mouseWorld.lerp(mouseTarget, 0.22);
+      simMaterial.uniforms.uMouse.value.copy(mouseWorld);
+      const cur = simMaterial.uniforms.uMouseActive;
+      cur.value += (mouseActiveTarget - cur.value) * 0.08;
+
+      simMaterial.uniforms.uProgress.value = progress;
+      simMaterial.uniforms.uTime.value = t;
+
+      // 1) Simulation pass: read previous positions, write new positions to rtB.
+      simMaterial.uniforms.uPositions.value = initialized ? rtA.texture : blobTexture;
+      renderer.setRenderTarget(rtB);
+      renderer.clear();
+      renderer.render(simScene, simCamera);
+      renderer.setRenderTarget(null);
+      initialized = true;
+
+      // 2) Render pass: sample the freshly-written texture.
+      renderMaterial.uniforms.uPositions.value = rtB.texture;
+      renderer.clear();
+      renderer.render(scene, camera);
+
+      // 3) Swap ping-pong targets.
+      const swap = rtA; rtA = rtB; rtB = swap;
+
+      requestAnimationFrame(tick);
+    }
+    tick();
+
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+      renderMaterial.uniforms.uPixelRatio.value = renderer.getPixelRatio();
+    });
+  </script>
+</body>
+</html>
